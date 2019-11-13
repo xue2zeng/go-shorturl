@@ -7,12 +7,14 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+	"github.com/justinas/alice"
 	"gopkg.in/validator.v2"
 )
 
 // App encapsulates Env, Router and Middleware
 type App struct {
-	Router *mux.Router
+	Router     *mux.Router
+	Middleware *Middleware
 }
 
 type shortenReq struct {
@@ -29,13 +31,16 @@ func (a *App) Initialize() {
 	// set log formatter
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	a.Router = mux.NewRouter()
+	a.Middleware = &Middleware{}
 	a.initializeRouters()
 }
 
 func (a *App) initializeRouters() {
-	a.Router.HandleFunc("/api/shorten", a.createShortlink).Methods("POST")
-	a.Router.HandleFunc("/api/info", a.getShortlinkInfo).Methods("GET")
-	a.Router.HandleFunc("/api/{shortlink:[a-zA-Z0-9]{1,11}}", a.redirect).Methods("GET")
+	m := alice.New(a.Middleware.LoggingHandler, a.Middleware.RecoverHandler)
+
+	a.Router.Handle("/api/shorten", m.ThenFunc(a.createShortlink)).Methods("POST")
+	a.Router.Handle("/api/info", m.ThenFunc(a.getShortlinkInfo)).Methods("GET")
+	a.Router.Handle("/api/{shortlink:[a-zA-Z0-9]{1,11}}", m.ThenFunc(a.redirect)).Methods("GET")
 }
 
 func (a *App) createShortlink(w http.ResponseWriter, r *http.Request) {
@@ -73,13 +78,13 @@ func respondWithError(w http.ResponseWriter, err error) {
 	switch e := err.(type) {
 	case Error:
 		log.Printf("HTTP %d - %s", e.Status(), e)
-		respondWithJson(w, e.Status(), e.Error())
+		respondWithJSON(w, e.Status(), e.Error())
 	default:
-		respondWithJson(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+		respondWithJSON(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 	}
 }
 
-func respondWithJson(w http.ResponseWriter, code int, payload interface{}) {
+func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	resp, _ := json.Marshal(payload)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
