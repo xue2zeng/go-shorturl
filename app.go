@@ -15,6 +15,7 @@ import (
 type App struct {
 	Router     *mux.Router
 	Middleware *Middleware
+	Config     *Env
 }
 
 type shortenReq struct {
@@ -27,9 +28,10 @@ type shortlinkResp struct {
 }
 
 // Initialize is initializtion of app
-func (a *App) Initialize() {
+func (a *App) Initialize(e *Env) {
 	// set log formatter
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	a.Config = e
 	a.Router = mux.NewRouter()
 	a.Middleware = &Middleware{}
 	a.initializeRouters()
@@ -43,35 +45,50 @@ func (a *App) initializeRouters() {
 	a.Router.Handle("/api/{shortlink:[a-zA-Z0-9]{1,11}}", m.ThenFunc(a.redirect)).Methods("GET")
 }
 
+// Run starts listen and server
+func (a *App) Run(addr string) {
+	log.Fatal(http.ListenAndServe(addr, a.Router))
+}
+
 func (a *App) createShortlink(w http.ResponseWriter, r *http.Request) {
 	var req shortenReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondWithError(w, StatusError{http.StatusBadRequest, fmt.Errorf("parse parameters failed %v", r.Body)})
 		return
 	}
-
 	if err := validator.Validate(req); err != nil {
-		respondWithError(w, StatusError{http.StatusBadRequest, fmt.Errorf("validator parameters failed %v", req)})
+		respondWithError(w, StatusError{http.StatusBadRequest, fmt.Errorf("validate parameters failed %v", req)})
 		return
 	}
 	defer r.Body.Close()
-	fmt.Printf("%v\n", req)
+
+	s, err := a.Config.S.Shorten(req.URL, req.ExpirationInMinutes)
+	if err != nil {
+		respondWithError(w, err)
+	} else {
+		respondWithJSON(w, http.StatusCreated, shortlinkResp{Shortlink: s})
+	}
 }
 
 func (a *App) getShortlinkInfo(w http.ResponseWriter, r *http.Request) {
 	vals := r.URL.Query()
 	s := vals.Get("shortlink")
-	fmt.Printf("%s\n", s)
+	d, err := a.Config.S.ShortlinkInfo(s)
+	if err != nil {
+		respondWithError(w, err)
+	} else {
+		respondWithJSON(w, http.StatusOK, d)
+	}
 }
 
 func (a *App) redirect(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	fmt.Printf("%s\n", vars["shortlink"])
-}
-
-// Run starts listen and server
-func (a *App) Run(addr string) {
-	log.Fatal(http.ListenAndServe(addr, a.Router))
+	u, err := a.Config.S.Unshorten(vars["shortlink"])
+	if err != nil {
+		respondWithError(w, err)
+	} else {
+		http.Redirect(w, r, u, http.StatusTemporaryRedirect)
+	}
 }
 
 func respondWithError(w http.ResponseWriter, err error) {
